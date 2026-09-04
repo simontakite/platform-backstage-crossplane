@@ -1,0 +1,194 @@
+####################################################################
+# Traefik Ingress Controller
+####################################################################
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  labels:
+    kustomize.toolkit.fluxcd.io/name: traefik
+    kustomize.toolkit.fluxcd.io/namespace: flux-system
+  name: traefik
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  path: ./platform-services/traefik
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  patches:
+    - patch: |
+        - op: replace 
+          path: /spec/values/ingressRoute/dashboard/matchRule
+          value: Host(`traefik.edgesoft.local`)
+      target:
+        kind: HelmRelease
+        name: traefik
+        namespace: flux-system
+
+######################################################################
+# Crossplane
+######################################################################
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  labels:
+    kustomize.toolkit.fluxcd.io/name: crossplane
+    kustomize.toolkit.fluxcd.io/namespace: flux-system
+  name: crossplane
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  path: ./platform-services/crossplane
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+
+##########################################################################
+# Crossplane providers
+##########################################################################
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  labels: 
+    kustomize.toolkit.fluxcd.io/name: crossplane-providers
+    kustomize.toolkit.fluxcd.io/namespace: flux-system
+  name: crossplane-providers
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  path: ./crossplane/providers
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  dependsOn:
+    - name: crossplane
+      namespace: flux-system 
+
+##########################################################################
+# Crossplane providers configurations
+##########################################################################
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  labels:
+    kustomize.toolkit.fluxcd.io/name: crossplane-provider-configs
+    kustomize.toolkit.fluxcd.io/namespace: flux-system
+  name: crossplane-provider-configs
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  path: ./crossplane/configs
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  dependsOn:
+    - name: crossplane-providers
+      namespace: flux-system
+
+##########################################################################
+# Crossplane functions
+##########################################################################
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  labels:
+    kustomize.toolkit.fluxcd.io/name: crossplane-functions
+    kustomize.toolkit.fluxcd.io/namespace: flux-system
+  name: crossplane-functions
+  namespace: flux-system
+spec:
+  interval: 1m0s  
+  path: ./crossplane/functions
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  dependsOn:
+    - name: crossplane-provider-configs
+      namespace: flux-system
+
+##########################################################################
+# Crossplane definitions
+##########################################################################
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  labels:
+    kustomize.toolkit.fluxcd.io/name: crossplane-definitions
+    kustomize.toolkit.fluxcd.io/namespace: flux-system
+  name: crossplane-definitions
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  path: ./crossplane/definitions
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  dependsOn:
+    - name: crossplane-provider-configs
+      namespace: flux-system
+
+########################################################################
+# Namespace Compositions
+########################################################################
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  labels:
+    kustomize.toolkit.fluxcd.io/name: crossplane-compositions
+    kustomize.toolkit.fluxcd.io/namespace: flux-system
+  name: crossplane-compositions
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  path: ./crossplane/compositions
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  dependsOn:
+    - name: crossplane-definitions
+      namespace: flux-system
+
+#######################################################################
+# Namespace Claims
+#######################################################################
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  labels:
+    kustomize.toolkit.fluxcd.io/name: namespace-claims
+    kustomize.toolkit.fluxcd.io/namespace: flux-system
+  name: namespace-claims
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  path: ./crossplane/claims
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  dependsOn:
+    - name: crossplane
+      namespace: flux-system

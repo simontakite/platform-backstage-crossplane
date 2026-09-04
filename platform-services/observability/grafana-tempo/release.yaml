@@ -1,0 +1,172 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+
+metadata:
+  name: grafana-tempo
+  namespace: flux-system 
+
+spec:
+  interval: 5m              
+  targetNamespace: monitoring  
+
+  chart:
+    spec:
+      chart: tempo
+      version: "1.24.4"     # Helm chart version (deploys Tempo v2.9.x)
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+
+  values:
+    # =============================================================
+    # Deployment Mode
+    # =============================================================
+    # SingleBinary = all Tempo components (distributor, ingester,
+    # querier, compactor, etc.) run inside ONE pod.
+    deploymentMode: SingleBinary
+
+    singleBinary:
+      replicas: 1            # Single instance (no HA)
+
+      resources:
+        # Guaranteed resources
+        requests:
+          cpu: 350m
+          memory: 1Gi
+        # Maximum allowed usage
+        limits:
+          cpu: 1500m
+          memory: 3Gi
+
+      # Limits Go runtime memory to prevent OOMKilled
+      # Should be slightly below container memory limit
+      extraEnv:
+        - name: GOMEMLIMIT
+          value: 2800MiB
+
+    # =============================================================
+    # Core Tempo Configuration
+    # =============================================================
+    tempo:
+
+      # Disable multi-tenancy (no X-Scope-OrgID required)
+      auth_enabled: false
+
+      server:
+        # ⚠ IMPORTANT:
+        # You changed the default HTTP port from 3100 → 3200.
+        # This means Grafana must connect to port 3200.
+        http_listen_port: 3200
+
+        # Internal gRPC communication port
+        grpc_listen_port: 3300
+    
+      # Because you changed grpc_listen_port to 3300,
+      # the internal worker must use that same port.
+      querier:
+        frontend_worker:
+          frontend_address: 127.0.0.1:3300
+
+      # =========================================================
+      # Storage Backend
+      # =========================================================
+      storage:
+        trace:
+          backend: s3
+          s3:
+            # MinIO endpoint (no http:// prefix to avoid duplication)
+            endpoint: minio.minio.svc.cluster.local:9000
+            bucket: tempo-traces
+            access_key: minioadmin
+            secret_key: minioadmin123
+            insecure: true
+
+            # REQUIRED for MinIO to avoid bucket subdomain DNS resolution
+            forcepathstyle: true
+
+      # =========================================================
+      # OTLP Ingestion
+      # =========================================================
+      distributor:
+        receivers:
+          otlp:
+            protocols:
+              # Only OTLP HTTP enabled here
+              http:
+                endpoint: "0.0.0.0:4318"
+
+      # =========================================================
+      # Ingestion & Compaction Tuning
+      # =========================================================
+      ingester:
+        # Maximum time a trace block stays open before being flushed
+        max_block_duration: 5m
+
+      compactor:
+        # How often compaction runs
+        compaction_interval: 10m
+
+        # How long traces are retained before deletion
+        block_retention: 24h
+
+    # =============================================================
+    # Service Definition
+    # =============================================================
+    service:
+      type: ClusterIP
+
+      ports:
+        # ⚠ PROBLEM HERE:
+        # Service exposes port 3100,
+        # but Tempo is listening on 3200.
+        #
+        # This mismatch will cause:
+        # "connection refused" errors.
+        #
+        # If you keep http_listen_port: 3200,
+        # this must also be 3200.
+        - name: http
+          port: 3200
+          targetPort: 3200
+
+        # OTLP gRPC (not enabled in distributor, but exposed)
+        - name: otlp-grpc
+          port: 4317
+          targetPort: 4317
+
+        # OTLP HTTP (used by Alloy)
+        - name: otlp-http
+          port: 4318
+          targetPort: 4318
+
+    # =============================================================
+    # Gateway trace protocol config (chart-level option)
+    # =============================================================
+    traces:
+      otlp:
+        # grpc:
+        #   enabled: true
+        #   port: 4317
+        http:
+          enabled: true
+          port: 4318
+
+    # =============================================================
+    # Disable Scalable Mode Components
+    # =============================================================
+    # Because deploymentMode is SingleBinary,
+    # all scalable components must be disabled.
+    backend: { replicas: 0 }
+    read: { replicas: 0 }
+    write: { replicas: 0 }
+    querier: { replicas: 0 }
+    distributor: { replicas: 0 }
+    compactor: { replicas: 0 }
+    queryFrontend: { replicas: 0 }
+    queryScheduler: { replicas: 0 }
+    ingester: { replicas: 0 }
+
+    # Disable bundled MinIO (using external MinIO instead)
+    minio:
+      enabled: false

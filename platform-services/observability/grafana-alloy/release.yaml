@@ -1,0 +1,188 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: grafana-alloy
+  namespace: flux-system
+spec:
+  interval: 5m
+  targetNamespace: monitoring
+
+  chart:
+    spec:
+      chart: alloy
+      version: "1.5.3"
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+
+  values:
+    service:
+      enabled: true
+      type: ClusterIP
+
+    controller:
+      volumes:
+        extra:
+          - name: varlog
+            hostPath:
+              path: /var/log
+      volumeMounts:
+        extra:
+          - name: varlog
+            mountPath: /var/log
+            readOnly: true
+
+    alloy:
+      #######################################################################
+      # Expose OTLP Ports
+      #######################################################################
+      extraPorts:
+        - name: otlp-grpc
+          port: 4317
+          targetPort: 4317
+        - name: otlp-http
+          port: 4318
+          targetPort: 4318
+
+      #######################################################################
+      # Mount host logs
+      #######################################################################
+      extraVolumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+
+      extraVolumeMounts:
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true
+
+      configMap:
+        content: |-
+          /////////////////////////////////////////////////////////////////
+          // LOGS → Loki (SingleBinary)
+          /////////////////////////////////////////////////////////////////
+
+          loki.write "local" {
+            endpoint {
+              url = "http://monitoring-loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+            }
+          }
+
+          /////////////////////////////////////////////////////////////////
+          // Node Logs
+          /////////////////////////////////////////////////////////////////
+
+          local.file_match "node_logs" {
+            path_targets = [{
+              __path__  = "/var/log/syslog",
+              job       = "node/syslog",
+              node_name = sys.env("HOSTNAME"),
+              cluster   = "platform-dev",
+            }]
+          }
+
+          loki.source.file "node_logs" {
+            targets    = local.file_match.node_logs.targets
+            forward_to = [loki.write.local.receiver]
+          }
+
+          /////////////////////////////////////////////////////////////////
+          // Kubernetes Pod Logs
+          /////////////////////////////////////////////////////////////////
+
+          discovery.kubernetes "pods" {
+            role = "pod"
+            selectors {
+              role  = "pod"
+              field = "spec.nodeName=" + sys.env("HOSTNAME")
+            }
+          }
+
+          discovery.relabel "pod_logs" {
+            targets = discovery.kubernetes.pods.targets
+
+            rule {
+              source_labels = ["__meta_kubernetes_namespace"]
+              target_label  = "namespace"
+            }
+
+            rule {
+              source_labels = ["__meta_kubernetes_pod_name"]
+              target_label  = "pod"
+            }
+
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              target_label  = "container"
+            }
+
+            rule {
+              source_labels = [
+                "__meta_kubernetes_namespace",
+                "__meta_kubernetes_pod_name",
+                "__meta_kubernetes_pod_uid",
+              ]
+              target_label = "__path__"
+              separator    = "_"
+              replacement  = "/var/log/pods/$1_$2_$3/*/*.log"
+            }
+          }
+
+          loki.source.kubernetes "pod_logs" {
+            targets    = discovery.relabel.pod_logs.output
+            forward_to = [loki.write.local.receiver]
+          }
+
+          /////////////////////////////////////////////////////////////////
+          // TRACES → Tempo + Service Graph
+          /////////////////////////////////////////////////////////////////
+
+          otelcol.receiver.otlp "default" {
+            http {
+              endpoint = "0.0.0.0:4318"
+            }
+
+            output {
+              traces = [otelcol.processor.batch.default.input]
+            }
+          }
+
+          otelcol.processor.batch "default" {
+            output {
+              traces = [
+                otelcol.exporter.otlphttp.tempo.input,
+                otelcol.connector.servicegraph.default.input,
+              ]
+            }
+          }
+
+          otelcol.connector.servicegraph "default" {
+            dimensions = [
+              "http.method",
+              "http.status_code",
+              "k8s.namespace.name",
+            ]
+
+            output {
+              metrics = [otelcol.exporter.prometheus.otel.input]
+            }
+          }
+
+          otelcol.exporter.otlphttp "tempo" {
+            client {
+              endpoint = "http://monitoring-grafana-tempo.monitoring.svc.cluster.local:4318"
+              timeout  = "30s"
+            }
+          }
+
+          otelcol.exporter.prometheus "otel" {
+            forward_to = [prometheus.remote_write.metrics.receiver]
+          }
+
+          prometheus.remote_write "metrics" {
+            endpoint {
+              url = "http://monitoring-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090/api/v1/write"
+            }
+          }
